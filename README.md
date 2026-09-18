@@ -1,6 +1,6 @@
 # 🔎 OpenAPI 版本兼容性审查工具
 
-对比新旧两份 **OpenAPI 3.x**（JSON / YAML）文档，递归解析 `$ref`（**支持循环引用**）、合并 `allOf`，按**请求 / 响应两个方向**的语义规则判断每一处变更是否向后兼容，精确定位破坏性变更的 JSON 路径并给出原因。支持结果筛选、引用展开树浏览、审查报告下载与历史记录。
+对比新旧两份 **OpenAPI 3.x**（JSON / YAML）文档，递归解析 `$ref`（**支持循环引用**）、合并 `allOf`，按**请求 / 响应两个方向**的语义规则判断每一处变更是否向后兼容，精确定位破坏性变更的 JSON 路径并给出原因。支持结果筛选、引用展开树浏览、审查报告下载、**单条发现的最小复现包导出**与历史记录。
 
 技术栈：**FastAPI + SQLite + 原生 JavaScript**（前端零构建、零框架依赖）。
 
@@ -50,6 +50,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
    - **方向筛选**（请求 / 响应 / 结构性）、**分类筛选**、关键字搜索；
    - 每条发现可展开：人类可读定位、旧/新版 JSON Pointer、`$ref` 锚点、旧值 / 新值、规则编号；
    - 点击发现项上的 **🌲旧 / 🌲新** 按钮，右侧「引用展开树」自动切到对应版本并展开到该 `$ref`；
+   - 每条发现可点击 **📦 导出最小复现包**，下载仅含该发现现场的最小文档对（ZIP，详见下文）；
    - 「⬇ 下载 Markdown / JSON 报告」获取可归档的审查报告。
 5. 「历史记录」标签页可重新打开、下载或删除保存在 SQLite 中的历史审查。
 
@@ -108,6 +109,50 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ---
 
+## 📦 最小复现包（Minimal Repro）
+
+针对**单条发现**导出一个可独立复现该差异的最小文档包，便于提交 issue、回归测试或在其他工具中复现。
+
+**使用方式**：展开任意发现项 → 点击「📦 导出最小复现包」→ 下载 ZIP。新审查与「历史记录」中重新打开的旧审查均可导出。
+
+**裁剪规则**：
+
+- 旧、新两份文档各自只保留：文档头（`openapi` / `info`，服务器类发现含 `servers`）、该发现所属的 **path / operation**（操作级发现同时保留 path 级 `parameters`，因为引擎会将其合并进操作比较）；
+- 从保留内容出发做**本地 `$ref` 闭包**：传递引用到的 `components`（schemas / parameters / requestBodies / pathItems 等）按原指针位置复制进最小文档，闭包用 visited 集合**去重**、对 A→B→A 这类**循环引用安全终止**；
+- 未被引用的路径与组件一律剔除。
+
+**导出前复核**：裁剪完成后，后端会用同一差异引擎对最小文档对重新比对，确认目标发现的 `rule_id`、方向、端点与语义定位仍然存在；**复核失败时返回可读错误（HTTP 409），不提供失真的包**。
+
+**ZIP 内容**：
+
+| 文件 | 说明 |
+| --- | --- |
+| `old.yaml` | 裁剪后的旧版最小文档（可直接重新上传审查） |
+| `new.yaml` | 裁剪后的新版最小文档 |
+| `manifest.json` | 原审查 ID / 标题 / 时间、发现指纹（语义身份字段的 SHA-256 短哈希）、发现详情（rule_id、方向、端点、定位、JSON Pointer 等）与复核结论 |
+
+`manifest.json` 示例：
+
+```json
+{
+  "format": "openapi-repro/1",
+  "generated_at": "2026-09-18T08:00:00+00:00",
+  "review": { "id": 7, "title": "Petstore 1.4.0 → 2.0.0", "..." : "..." },
+  "finding": {
+    "id": 12,
+    "fingerprint": "3f8c1a2b9d0e4f56",
+    "rule_id": "property-became-required",
+    "direction": "request",
+    "endpoint": "POST /pets",
+    "location": "requestBody > application/json → 请求体.status"
+  },
+  "verification": { "status": "passed", "engine": "run_diff" },
+  "files": ["old.yaml", "new.yaml", "manifest.json"]
+}
+```
+
+---
+
 ## 🗂️ 项目结构
 
 ```
@@ -117,6 +162,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 │   ├── parser.py      # JSON·YAML 载入与 OpenAPI 3.x 校验
 │   ├── refs.py        # JSON Pointer、$ref 解析、循环安全的引用展开树
 │   ├── diff.py        # 语义兼容性规则引擎（请求/响应双方向）
+│   ├── repro.py       # 最小复现包：文档裁剪、$ref 闭包、复核与 ZIP 打包
 │   ├── reports.py     # Markdown / JSON 报告生成
 │   └── database.py    # SQLite 持久化（评审、原文、结果）
 ├── static/
@@ -140,6 +186,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `GET` | `/api/reviews/{id}/pointers` | 引用树根节点分组（paths / components） |
 | `GET` | `/api/reviews/{id}/tree?side=old|new&pointer=/...` | 引用展开树（含循环标记） |
 | `GET` | `/api/reviews/{id}/report?format=markdown|json` | 下载报告 |
+| `GET` | `/api/reviews/{id}/findings/{fid}/repro` | 导出单条发现的最小复现包（ZIP；复核失败返回 409 及可读原因） |
 
 交互式文档：http://localhost:8000/docs （FastAPI 自动生成）。
 

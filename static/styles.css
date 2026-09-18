@@ -427,6 +427,24 @@ input[type="search"] { min-width: 220px; }
 }
 .rule-id { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
 
+.repro-row {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.repro-btn {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.repro-btn:hover { border-color: var(--accent); color: var(--accent); }
+.repro-btn:disabled { opacity: 0.6; cursor: wait; }
+.repro-hint { font-size: 11px; color: var(--text-faint); }
+
 .empty-hint {
   text-align: center;
   color: var(--text-faint);

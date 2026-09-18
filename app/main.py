@@ -1,4 +1,4 @@
-"""FastAPI 入口：审查、历史、引用展开树、报告下载。"""
+"""FastAPI 入口：审查、历史、引用展开树、报告下载、最小复现包导出。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import database, reports
+from . import database, reports, repro
 from .diff import run_diff, summarize
 from .parser import SpecParseError, load_spec
 from .refs import build_ref_tree, expand_path_to_pointer, list_root_pointers
@@ -184,6 +184,33 @@ def download_report(review_id: int, format: str = "markdown") -> Response:
         headers={
             "Content-Disposition": (
                 f'attachment; filename="openapi-review-{review_id}-{safe_title}.md"'
+            )
+        },
+    )
+
+
+# ---------------------------------------------------------------------- #
+# 最小复现包导出
+# ---------------------------------------------------------------------- #
+@app.get("/api/reviews/{review_id}/findings/{finding_id}/repro")
+def export_repro(review_id: int, finding_id: int) -> Response:
+    review = database.get_review(review_id, with_specs=True)
+    if review is None:
+        raise HTTPException(status_code=404, detail="审查记录不存在")
+    finding = repro.find_finding(review["findings"], finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="发现项不存在")
+    try:
+        zip_bytes, _manifest = repro.build_repro_package(review, finding)
+    except repro.ReproError as exc:
+        # 复核未通过：返回可读错误，不提供失真的包
+        raise HTTPException(status_code=409, detail=str(exc))
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="openapi-repro-r{review_id}-f{finding_id}.zip"'
             )
         },
     )

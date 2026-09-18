@@ -136,6 +136,8 @@
   // ------------------------------------------------------------------ //
   function renderResult() {
     const r = state.review;
+    // 历史数据若没有引擎序号 id，按 1 起始位置补齐（与后端回退规则一致）
+    (r.findings || []).forEach((f, i) => { if (f.id == null) f.id = i + 1; });
     $("#result-area").classList.remove("hidden");
     $("#result-title").textContent = r.title || `审查 #${r.id}`;
     $("#result-meta").textContent =
@@ -271,6 +273,13 @@
           jumpToRef(el.dataset.treeRef || null, el.dataset.treeSide, pointer);
         });
       });
+      const reproBtn = card.querySelector("[data-repro]");
+      if (reproBtn) {
+        reproBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          downloadRepro(Number(reproBtn.dataset.repro), reproBtn);
+        });
+      }
     });
   }
 
@@ -316,6 +325,11 @@
         </div>
         ${hasValues ? `<div class="value-diff">${oldVal}${newVal}</div>` : ""}
         <div class="rule-id">rule: ${escapeHtml(f.rule_id)} · 方向：${DIRECTION_LABEL[f.direction] || f.direction} · 分类：${escapeHtml(f.category)}</div>
+        <div class="repro-row">
+          <button class="mini-link repro-btn" data-repro="${f.id}"
+            title="裁剪新旧文档，仅保留该发现所属路径/操作及其传递引用的组件，打包 ZIP 下载">📦 导出最小复现包</button>
+          <span class="repro-hint">含 old.yaml / new.yaml / manifest.json，导出前会自动复核可复现性</span>
+        </div>
       </div>
     </article>`;
   }
@@ -532,6 +546,45 @@
   }
   $("#download-md").addEventListener("click", () => downloadReport("markdown"));
   $("#download-json").addEventListener("click", () => downloadReport("json"));
+
+  // ------------------------------------------------------------------ //
+  // 最小复现包导出
+  // ------------------------------------------------------------------ //
+  async function downloadRepro(findingId, btn) {
+    if (!state.review || !findingId) return;
+    const oldText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "📦 生成中…";
+    try {
+      const resp = await fetch(
+        `/api/reviews/${state.review.id}/findings/${findingId}/repro`
+      );
+      if (!resp.ok) {
+        let msg = `HTTP ${resp.status}`;
+        try {
+          const data = await resp.json();
+          msg = data.detail || msg;
+        } catch (_) { /* 非 JSON 错误响应 */ }
+        showError(`最小复现包导出失败：${msg}`);
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `openapi-repro-r${state.review.id}-f${findingId}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      hideError();
+    } catch (err) {
+      showError(`最小复现包导出失败：${err.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }
 
   // ------------------------------------------------------------------ //
   // 历史记录
