@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import database, reports
+from . import database, reports, repro
 from .diff import run_diff, summarize
 from .parser import SpecParseError, load_spec
 from .refs import build_ref_tree, expand_path_to_pointer, list_root_pointers
@@ -185,6 +185,50 @@ def download_report(review_id: int, format: str = "markdown") -> Response:
             "Content-Disposition": (
                 f'attachment; filename="openapi-review-{review_id}-{safe_title}.md"'
             )
+        },
+    )
+
+
+# ---------------------------------------------------------------------- #
+# 最小复现包下载（ZIP：old.yaml + new.yaml + manifest.json）
+# ---------------------------------------------------------------------- #
+@app.get("/api/reviews/{review_id}/repro/{finding_id}")
+def download_repro(review_id: int, finding_id: int) -> Response:
+    review = database.get_review(review_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="审查记录不存在")
+    findings = review.get("findings") or []
+    target = next((f for f in findings if f.get("id") == finding_id), None)
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"审查 #{review_id} 中不存在序号为 {finding_id} 的发现项",
+        )
+
+    specs = database.get_specs(review_id)
+    if specs is None:  # 理论上不会发生：上面已确认记录存在
+        raise HTTPException(status_code=404, detail="审查记录不存在")
+
+    try:
+        package, manifest = repro.build_package(
+            specs[0], specs[1], target, review
+        )
+    except repro.ReproError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+
+    safe_title = "".join(
+        c for c in (review.get("title") or f"review-{review_id}")
+        if c.isalnum() or c in ("-", "_", " ", ".")
+    ).strip().replace(" ", "_") or f"review-{review_id}"
+
+    return Response(
+        content=package,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="repro-{review_id}-f{finding_id}-{safe_title}.zip"'
+            ),
+            "X-Repro-Fingerprint": manifest["finding_fingerprint"],
         },
     )
 

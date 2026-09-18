@@ -271,6 +271,13 @@
           jumpToRef(el.dataset.treeRef || null, el.dataset.treeSide, pointer);
         });
       });
+      const reproBtn = card.querySelector("[data-repro]");
+      if (reproBtn) {
+        reproBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await exportRepro(Number(reproBtn.dataset.repro), reproBtn);
+        });
+      }
     });
   }
 
@@ -283,6 +290,8 @@
       f.new_ref ? `<button class="mini-link" title="在新版引用树中查看"
           data-tree-ref="${escapeAttr(f.new_ref)}" data-tree-side="new"
           data-tree-pointer="${escapeAttr(f.new_ref)}">🌲新</button>` : "",
+      `<button class="mini-link repro-link" title="导出该发现的最小复现包（ZIP）"
+          data-repro="${f.id}">📦复现包</button>`,
     ].join("");
 
     const hasValues = f.old_value !== null || f.new_value !== null;
@@ -532,6 +541,68 @@
   }
   $("#download-md").addEventListener("click", () => downloadReport("markdown"));
   $("#download-json").addEventListener("click", () => downloadReport("json"));
+
+  // ------------------------------------------------------------------ //
+  // 最小复现包（ZIP）导出：后端裁剪 + 复核后返回；复核失败要可读提示
+  // ------------------------------------------------------------------ //
+  async function exportRepro(findingId, btn) {
+    if (!state.review) return;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "打包中…";
+    try {
+      const resp = await fetch(
+        `/api/reviews/${state.review.id}/repro/${findingId}`
+      );
+      if (!resp.ok) {
+        let message = `导出失败（HTTP ${resp.status}）`;
+        try {
+          const data = await resp.json();
+          if (data && data.detail) message = data.detail;
+        } catch (_) { /* 保留默认错误文案 */ }
+        showToast(message, true);
+        return;
+      }
+      const blob = await resp.blob();
+      const disposition = resp.headers.get("Content-Disposition") || "";
+      const m = disposition.match(/filename="?([^";]+)"?/);
+      const filename = m ? m[1]
+        : `repro-${state.review.id}-f${findingId}.zip`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast("已导出最小复现包（含 old.yaml / new.yaml / manifest.json）");
+    } catch (err) {
+      showToast(`导出请求失败：${err.message}`, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  }
+
+  /** 页面右下角轻提示（错误为红色，3~6 秒后自动消失）。 */
+  function showToast(message, isError = false) {
+    let box = $("#toast-box");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "toast-box";
+      document.body.appendChild(box);
+    }
+    const item = document.createElement("div");
+    item.className = "toast" + (isError ? " error" : "");
+    item.textContent = message;
+    box.appendChild(item);
+    requestAnimationFrame(() => item.classList.add("show"));
+    setTimeout(() => {
+      item.classList.remove("show");
+      setTimeout(() => item.remove(), 250);
+    }, isError ? 6000 : 3500);
+  }
 
   // ------------------------------------------------------------------ //
   // 历史记录

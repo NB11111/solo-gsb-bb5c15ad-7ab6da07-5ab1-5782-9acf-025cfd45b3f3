@@ -1,6 +1,6 @@
 # 🔎 OpenAPI 版本兼容性审查工具
 
-对比新旧两份 **OpenAPI 3.x**（JSON / YAML）文档，递归解析 `$ref`（**支持循环引用**）、合并 `allOf`，按**请求 / 响应两个方向**的语义规则判断每一处变更是否向后兼容，精确定位破坏性变更的 JSON 路径并给出原因。支持结果筛选、引用展开树浏览、审查报告下载与历史记录。
+对比新旧两份 **OpenAPI 3.x**（JSON / YAML）文档，递归解析 `$ref`（**支持循环引用**）、合并 `allOf`，按**请求 / 响应两个方向**的语义规则判断每一处变更是否向后兼容，精确定位破坏性变更的 JSON 路径并给出原因。支持结果筛选、引用展开树浏览、审查报告下载、**单条发现的最小复现包（ZIP）导出**与历史记录。
 
 技术栈：**FastAPI + SQLite + 原生 JavaScript**（前端零构建、零框架依赖）。
 
@@ -50,6 +50,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
    - **方向筛选**（请求 / 响应 / 结构性）、**分类筛选**、关键字搜索；
    - 每条发现可展开：人类可读定位、旧/新版 JSON Pointer、`$ref` 锚点、旧值 / 新值、规则编号；
    - 点击发现项上的 **🌲旧 / 🌲新** 按钮，右侧「引用展开树」自动切到对应版本并展开到该 `$ref`；
+   - 点击 **📦复现包** 可导出该发现项的「最小复现包」（见下节）；
    - 「⬇ 下载 Markdown / JSON 报告」获取可归档的审查报告。
 5. 「历史记录」标签页可重新打开、下载或删除保存在 SQLite 中的历史审查。
 
@@ -108,21 +109,74 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ---
 
+## 🧩 单条发现：最小复现包导出
+
+当一条发现需要提 issue、转交同事或放进 CI 附件时，没有必要附上两份完整 API 文档。点击发现项右上角的 **📦复现包**，后端会基于该条发现**分别裁剪**旧、新两份文档，产出一个 ZIP：
+
+```
+repro-<审查ID>-f<发现序号>-<标题>.zip
+├── old.yaml        # 仅含该发现所需内容的旧版文档
+├── new.yaml        # 仅含该发现所需内容的新版文档
+└── manifest.json   # 原审查 ID、发现项指纹与复核结果
+```
+
+裁剪规则（旧、新两侧各自独立执行）：
+
+1. **只保留该发现所属的 path / operation**：未涉及的路径全部剔除；
+2. **保留必要文档头**：`openapi`、`info`；`servers` 增删、`openapi` 版本等文档级发现保留 `servers`；保留 `security` 头；
+3. **传递引用闭包**：从保留的路径子树出发，沿 `$ref`（含 `discriminator.mapping`）递归收集**本地** `components`（schemas / parameters / requestBodies / responses / headers / securitySchemes / examples / links / callbacks），并把根级与操作级 `security` 引用到的安全方案一并纳入；
+4. **去重、循环安全**：闭包以 JSON Pointer 去重，自引用 / 互相引用（A→B→A）只收敛一次，不会无限递归；外部文件引用原样保留但不会拉入不存在的本地组件；
+5. **未被引用的路径与组件一律剔除**。
+
+### 导出前强制复核（防止失真）
+
+裁剪完成后，服务端会把 `old.yaml` / `new.yaml` **重新送入同一个差异引擎**，只有同时满足以下条件才会提供下载：
+
+- 目标 **`rule_id`** 再次出现；
+- **方向**（request / response / none）、**变更类型**（added / removed / changed）一致；
+- **端点**（`GET /orders`）与**语义定位**（`responses[200] > application/json → 响应.status`）一致；
+- 原发现的 `$ref` 组件锚点 / 路径锚点在裁剪文档中仍然存在。
+
+否则接口返回 `422` 与**可读中文原因**（例如“未再产生规则 enum-value-removed……导出已中止”），前端以红色提示展示，**绝不交付无法复现该发现的包**。
+
+### manifest.json
+
+记录可追溯信息，字段示例：
+
+| 字段 | 含义 |
+| --- | --- |
+| `review.id` / `review.title` / 版本与文件名 | 原审查记录 ID 与元数据 |
+| `finding.id` / `rule_id` / `severity` / `direction` / `endpoint` / `location` | 触发导出的发现项完整身份 |
+| `finding_fingerprint` | 发现指纹：对 `rule_id、direction、change、category、endpoint、location、old/new_json_path、old/new_ref` 做规范化 JSON 后取 **SHA-256**；不含序号与旧/新值，文案微调不影响指纹 |
+| `verification.matched` | 复核是否在裁剪文档中再次匹配到该发现（始终为 `true`，否则不会返回包） |
+| `verification.total_findings_in_package` | 裁剪文档重跑后的发现总数（可能小于原审查） |
+
+### 历史数据与单次审查兼容
+
+- 该功能**不改动数据库结构**，SQLite 中已有的历史审查可直接对其任意发现导出复现包；
+- 每次审查独立、互不影响：裁剪与复核只依赖该次审查保存的两份原始文档与所选发现；
+- 复现包是自包含的两份独立 OpenAPI YAML，可再次上传回本工具或任何 OpenAPI 工具链使用。
+
+---
+
 ## 🗂️ 项目结构
 
 ```
 .
 ├── app/
-│   ├── main.py        # FastAPI：审查 / 历史 / 引用树 / 报告下载接口
+│   ├── main.py        # FastAPI：审查 / 历史 / 引用树 / 报告 / 复现包接口
 │   ├── parser.py      # JSON·YAML 载入与 OpenAPI 3.x 校验
 │   ├── refs.py        # JSON Pointer、$ref 解析、循环安全的引用展开树
 │   ├── diff.py        # 语义兼容性规则引擎（请求/响应双方向）
+│   ├── repro.py       # 最小复现包：引用闭包裁剪 + 差异引擎复核 + ZIP 打包
 │   ├── reports.py     # Markdown / JSON 报告生成
 │   └── database.py    # SQLite 持久化（评审、原文、结果）
+├── tests/
+│   └── test_repro.py  # 复现包裁剪 / 闭包 / 复核失败测试（零额外依赖）
 ├── static/
 │   ├── index.html     # 单页界面
 │   ├── styles.css
-│   ├── app.js         # 原生 JS：筛选 / 展开树 / 历史 / 下载
+│   ├── app.js         # 原生 JS：筛选 / 展开树 / 历史 / 报告与复现包下载
 │   └── samples.js     # 四组内置示例（JSON + YAML）
 ├── Dockerfile
 ├── docker-compose.yml
@@ -140,8 +194,17 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `GET` | `/api/reviews/{id}/pointers` | 引用树根节点分组（paths / components） |
 | `GET` | `/api/reviews/{id}/tree?side=old|new&pointer=/...` | 引用展开树（含循环标记） |
 | `GET` | `/api/reviews/{id}/report?format=markdown|json` | 下载报告 |
+| `GET` | `/api/reviews/{id}/repro/{finding_id}` | 导出某条发现的最小复现包 ZIP（裁剪 + 复核失败时 422） |
 
 交互式文档：http://localhost:8000/docs （FastAPI 自动生成）。
+
+### 运行测试
+
+测试仅依赖标准库（运行环境本身已含 PyYAML / FastAPI）：
+
+```bash
+python -m unittest discover -s tests
+```
 
 ## ⚠️ 范围说明
 

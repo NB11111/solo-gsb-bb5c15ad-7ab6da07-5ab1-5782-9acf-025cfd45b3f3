@@ -368,6 +368,15 @@ input[type="search"] { min-width: 220px; }
   padding: 0 2px;
 }
 .mini-link:hover { color: var(--ok); }
+.mini-link.repro-link {
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+}
+.mini-link.repro-link:hover { color: var(--accent); border-color: var(--accent); }
+.mini-link:disabled { opacity: .55; cursor: wait; }
 .change-tag {
   font-size: 10.5px;
   color: var(--text-faint);
@@ -582,4 +591,35 @@ input[type="search"] { min-width: 220px; }
   .tree-col { position: static; max-height: 600px; }
   .stat-cards { grid-template-columns: repeat(2, 1fr); }
   .verdict { margin-left: 0; }
+}
+
+/* ---------------- 轻提示 Toast（最小复现包导出） ---------------- */
+#toast-box {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(460px, calc(100vw - 44px));
+}
+.toast {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity .22s, transform .22s;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.error {
+  border-left-color: var(--breaking);
+  background: var(--breaking-soft);
+  color: #ffb4bc;
 }
